@@ -77,16 +77,14 @@ func (m *migrator) determineMigrationStartingPoint() (int64, error) {
 	}
 	m.log("[Migrator]> Determining the latest migration applied to the database..")
 
-	migrationID := int64(0)
 	row := m.db.QueryRow("SELECT MAX(migration_id) as 'last_migration' FROM migrations")
-
 	if err := row.Err(); err != nil {
 		return 0, err
 	}
 
 	selectField := &sql.NullInt64{}
 	if err := row.Scan(&selectField); err != nil {
-		return migrationID, err
+		return 0, err
 	}
 
 	if selectField.Valid != true {
@@ -145,6 +143,11 @@ var updateMigrationsAppliedHook func(Migration) error
 var determineMigrationsStartedHook func() (int64, error)
 
 type SQLClient interface {
-	QueryRow(query string, args ...any) *sql.Row
+	QueryRow(query string, args ...any) Row
 	Exec(query string, args ...any) (*sql.Result, error)
+}
+
+type Row interface {
+	Err() error
+	Scan(...any) error
 }

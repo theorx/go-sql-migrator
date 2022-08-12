@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/exp/slices"
-	"log"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -210,7 +208,6 @@ func TestUpdateMigrationsAppliedExecFails(t *testing.T) {
 
 			return nil, testError
 		},
-		queryRowImpl: nil,
 	}, nil)
 
 	entry := NewMigration(37, "x migration", func(db SQLClient) error {
@@ -244,7 +241,6 @@ func TestUpdateMigrationsAppliedReturnsNil(t *testing.T) {
 
 			return nil, nil
 		},
-		queryRowImpl: nil,
 	}, nil)
 
 	entry := NewMigration(12, "xyz migration", func(db SQLClient) error {
@@ -295,8 +291,7 @@ func TestDetermineMigrationStartingPointOnQueryErrorReturnsError(t *testing.T) {
 	testError := errors.New("query row error")
 
 	m := NewMigrator(&mockSQLClient{
-		execImpl: nil,
-		queryRowImpl: func(s string, a ...any) *sql.Row {
+		queryRowImpl: func(s string, a ...any) Row {
 
 			return createRowWithError(testError)
 		},
@@ -307,15 +302,91 @@ func TestDetermineMigrationStartingPointOnQueryErrorReturnsError(t *testing.T) {
 	}
 }
 
+func TestDetermineMigrationStartingPointOnScanErrorReturnsError(t *testing.T) {
+
+	testError := errors.New("error on row scan")
+
+	m := NewMigrator(&mockSQLClient{
+		queryRowImpl: func(s string, a ...any) Row {
+
+			return &mockRow{
+				errImpl: func() error {
+					return nil
+				},
+				scanImpl: func(v ...any) error {
+					return testError
+				},
+			}
+		},
+	}, nil)
+
+	if _, got := m.determineMigrationStartingPoint(); got != testError {
+		t.Errorf("determineMigrationStartingPoint returned error %v, expected %v", got, testError)
+	}
+}
+
+func TestDetermineMigrationStartingPointInvalidSelectFieldReturnsSelectedValue(t *testing.T) {
+
+	m := NewMigrator(&mockSQLClient{
+		queryRowImpl: func(s string, a ...any) Row {
+
+			return &mockRow{
+				errImpl: func() error {
+					return nil
+				},
+				scanImpl: func(v ...any) error {
+					val := v[0].(**sql.NullInt64)
+					*val = &sql.NullInt64{
+						Int64: 32,
+						Valid: true,
+					}
+
+					return nil
+				},
+			}
+		},
+	}, nil)
+
+	if value, err := m.determineMigrationStartingPoint(); err != nil || value != 32 {
+		t.Errorf("determineMigrationStartingPoint returned error %v, expected nil", err)
+	}
+}
+
+func TestDetermineMigrationStartingPointInvalidSelectFieldReturnsZero(t *testing.T) {
+	m := NewMigrator(&mockSQLClient{
+		queryRowImpl: func(s string, a ...any) Row {
+
+			return &mockRow{
+				errImpl: func() error {
+					return nil
+				},
+				scanImpl: func(v ...any) error {
+					val := v[0].(**sql.NullInt64)
+					*val = &sql.NullInt64{
+						Int64: 0,
+						Valid: false,
+					}
+
+					return nil
+				},
+			}
+		},
+	}, nil)
+
+	if value, err := m.determineMigrationStartingPoint(); err != nil || value != 0 {
+		t.Errorf("determineMigrationStartingPoint returned error %v, expected nil", err)
+	}
+}
+
 /*
 Mock implementation for testing db client interactions
 */
 type mockSQLClient struct {
 	execImpl     func(string, ...any) (*sql.Result, error)
-	queryRowImpl func(string, ...any) *sql.Row
+	queryRowImpl func(string, ...any) Row
 }
 
-func (m *mockSQLClient) QueryRow(query string, args ...any) *sql.Row {
+func (m *mockSQLClient) QueryRow(query string, args ...any) Row {
 	return m.queryRowImpl(query, args...)
 }
 
@@ -323,17 +394,24 @@ func (m *mockSQLClient) Exec(query string, args ...any) (*sql.Result, error) {
 	return m.execImpl(query, args...)
 }
 
-func createRowWithError(err error) *sql.Row {
-	row := &sql.Row{}
-	//*(unsafe.Pointer(reflect.Indirect(reflect.ValueOf(row)).FieldByName("err").UnsafeAddr())) = err
+type mockRow struct {
+	errImpl  func() error
+	scanImpl func(v ...any) error
+}
 
-	pointerVal := reflect.ValueOf(row)
-	val := reflect.Indirect(pointerVal)
+func (m *mockRow) Err() error {
+	return m.errImpl()
+}
 
-	log.Println(val.NumField())
-	log.Println(val.Field(0))
-	val.Field(1).Set(reflect.ValueOf(err).Elem())
+func (m *mockRow) Scan(v ...any) error {
+	return m.scanImpl(v...)
+}
 
+func createRowWithError(err error) Row {
 
-	return row
+	return &mockRow{
+		errImpl: func() error {
+			return err
+		},
+	}
 }
