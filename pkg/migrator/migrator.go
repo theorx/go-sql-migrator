@@ -83,11 +83,12 @@ func (m *migrator) determineMigrationStartingPoint() (int64, error) {
 	}
 
 	selectField := &sql.NullInt64{}
+
 	if err := row.Scan(&selectField); err != nil {
 		return 0, err
 	}
 
-	if selectField.Valid != true {
+	if selectField == nil {
 		m.log("[Migrator]> Migration id was not found, starting from 0")
 		return 0, nil
 	}
@@ -143,11 +144,6 @@ var updateMigrationsAppliedHook func(Migration) error
 var determineMigrationsStartedHook func() (int64, error)
 
 type SQLClient interface {
-	QueryRow(query string, args ...any) Row
-	Exec(query string, args ...any) (*sql.Result, error)
-}
-
-type Row interface {
-	Err() error
-	Scan(...any) error
+	QueryRow(query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
 }

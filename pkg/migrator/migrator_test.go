@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/DATA-DOG/go-sqlmock"
 	"golang.org/x/exp/slices"
 	"strconv"
 	"strings"
@@ -200,7 +201,7 @@ func TestUpdateMigrationsAppliedExecFails(t *testing.T) {
 	testError := errors.New("exec error")
 
 	m := NewMigrator(&mockSQLClient{
-		execImpl: func(s string, a ...any) (*sql.Result, error) {
+		execImpl: func(s string, a ...any) (sql.Result, error) {
 			queryStringSeen = s
 			idSeen = a[0].(int64)
 			nameSeen = a[1].(string)
@@ -237,7 +238,7 @@ func TestUpdateMigrationsAppliedExecFails(t *testing.T) {
 
 func TestUpdateMigrationsAppliedReturnsNil(t *testing.T) {
 	m := NewMigrator(&mockSQLClient{
-		execImpl: func(s string, a ...any) (*sql.Result, error) {
+		execImpl: func(s string, a ...any) (sql.Result, error) {
 
 			return nil, nil
 		},
@@ -257,7 +258,7 @@ func TestSetupMigrationTableExecsCorrectQuery(t *testing.T) {
 	testError := errors.New("exec error")
 
 	m := NewMigrator(&mockSQLClient{
-		execImpl: func(s string, a ...any) (*sql.Result, error) {
+		execImpl: func(s string, a ...any) (sql.Result, error) {
 			if s != "CREATE TABLE IF NOT EXISTS migrations (id INT AUTO_INCREMENT PRIMARY KEY,"+
 				" migration_id INT NOT NULL UNIQUE, name varchar(128) NOT NULL, created_at INT NOT NULL) ENGINE=INNODB" {
 				t.Errorf("Create table query did not match the expected query. Got: %s", s)
@@ -275,7 +276,7 @@ func TestSetupMigrationTableExecsCorrectQuery(t *testing.T) {
 
 func TestSetupMigrationTableReturnsNil(t *testing.T) {
 	m := NewMigrator(&mockSQLClient{
-		execImpl: func(s string, a ...any) (*sql.Result, error) {
+		execImpl: func(s string, a ...any) (sql.Result, error) {
 			return nil, nil
 		},
 		queryRowImpl: nil,
@@ -287,15 +288,16 @@ func TestSetupMigrationTableReturnsNil(t *testing.T) {
 }
 
 func TestDetermineMigrationStartingPointOnQueryErrorReturnsError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
 
 	testError := errors.New("query row error")
+	mock.ExpectQuery("SELECT MAX\\(migration_id\\) as \\'last_migration\\' FROM migrations").WillReturnError(testError)
 
-	m := NewMigrator(&mockSQLClient{
-		queryRowImpl: func(s string, a ...any) Row {
-
-			return createRowWithError(testError)
-		},
-	}, nil)
+	m := NewMigrator(db, nil)
 
 	if _, got := m.determineMigrationStartingPoint(); got != testError {
 		t.Errorf("determineMigrationStartingPoint returned error %v, expected %v", got, testError)
@@ -303,22 +305,16 @@ func TestDetermineMigrationStartingPointOnQueryErrorReturnsError(t *testing.T) {
 }
 
 func TestDetermineMigrationStartingPointOnScanErrorReturnsError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
 
 	testError := errors.New("error on row scan")
+	mock.ExpectQuery("SELECT MAX\\(migration_id\\) as \\'last_migration\\' FROM migrations").WillReturnError(testError)
 
-	m := NewMigrator(&mockSQLClient{
-		queryRowImpl: func(s string, a ...any) Row {
-
-			return &mockRow{
-				errImpl: func() error {
-					return nil
-				},
-				scanImpl: func(v ...any) error {
-					return testError
-				},
-			}
-		},
-	}, nil)
+	m := NewMigrator(db, nil)
 
 	if _, got := m.determineMigrationStartingPoint(); got != testError {
 		t.Errorf("determineMigrationStartingPoint returned error %v, expected %v", got, testError)
@@ -326,26 +322,18 @@ func TestDetermineMigrationStartingPointOnScanErrorReturnsError(t *testing.T) {
 }
 
 func TestDetermineMigrationStartingPointInvalidSelectFieldReturnsSelectedValue(t *testing.T) {
+	db, mock, err := sqlmock.New()
 
-	m := NewMigrator(&mockSQLClient{
-		queryRowImpl: func(s string, a ...any) Row {
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
 
-			return &mockRow{
-				errImpl: func() error {
-					return nil
-				},
-				scanImpl: func(v ...any) error {
-					val := v[0].(**sql.NullInt64)
-					*val = &sql.NullInt64{
-						Int64: 32,
-						Valid: true,
-					}
+	mock.ExpectQuery("SELECT MAX\\(migration_id\\) as \\'last_migration\\' FROM migrations").
+		WillReturnRows(
+			sqlmock.NewRows([]string{"last_migration"}).AddRow(32),
+		)
 
-					return nil
-				},
-			}
-		},
-	}, nil)
+	m := NewMigrator(db, nil)
 
 	if value, err := m.determineMigrationStartingPoint(); err != nil || value != 32 {
 		t.Errorf("determineMigrationStartingPoint returned error %v, expected nil", err)
@@ -353,28 +341,32 @@ func TestDetermineMigrationStartingPointInvalidSelectFieldReturnsSelectedValue(t
 }
 
 func TestDetermineMigrationStartingPointInvalidSelectFieldReturnsZero(t *testing.T) {
-	m := NewMigrator(&mockSQLClient{
-		queryRowImpl: func(s string, a ...any) Row {
+	db, mock, err := sqlmock.New()
 
-			return &mockRow{
-				errImpl: func() error {
-					return nil
-				},
-				scanImpl: func(v ...any) error {
-					val := v[0].(**sql.NullInt64)
-					*val = &sql.NullInt64{
-						Int64: 0,
-						Valid: false,
-					}
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
 
-					return nil
-				},
-			}
-		},
-	}, nil)
+	mock.ExpectQuery("SELECT MAX\\(migration_id\\) as \\'last_migration\\' FROM migrations").WillReturnRows(sqlmock.NewRows([]string{"last_migration"}).AddRow(nil))
 
+	m := NewMigrator(db, nil)
 	if value, err := m.determineMigrationStartingPoint(); err != nil || value != 0 {
 		t.Errorf("determineMigrationStartingPoint returned error %v, expected nil", err)
+	}
+}
+
+func TestDetermineMigrationStartingPointInvalidSelectFieldScanFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
+
+	mock.ExpectQuery("SELECT MAX\\(migration_id\\) as \\'last_migration\\' FROM migrations").WillReturnRows(sqlmock.NewRows([]string{"last_migration"}).AddRow("abc"))
+
+	m := NewMigrator(db, nil)
+	if _, err := m.determineMigrationStartingPoint(); err == nil {
+		t.Errorf("determineMigrationStartingPoint expected an error, but got nil")
 	}
 }
 
@@ -382,36 +374,14 @@ func TestDetermineMigrationStartingPointInvalidSelectFieldReturnsZero(t *testing
 Mock implementation for testing db client interactions
 */
 type mockSQLClient struct {
-	execImpl     func(string, ...any) (*sql.Result, error)
-	queryRowImpl func(string, ...any) Row
+	execImpl     func(string, ...any) (sql.Result, error)
+	queryRowImpl func(string, ...any) *sql.Row
 }
 
-func (m *mockSQLClient) QueryRow(query string, args ...any) Row {
+func (m *mockSQLClient) QueryRow(query string, args ...any) *sql.Row {
 	return m.queryRowImpl(query, args...)
 }
 
-func (m *mockSQLClient) Exec(query string, args ...any) (*sql.Result, error) {
+func (m *mockSQLClient) Exec(query string, args ...any) (sql.Result, error) {
 	return m.execImpl(query, args...)
-}
-
-type mockRow struct {
-	errImpl  func() error
-	scanImpl func(v ...any) error
-}
-
-func (m *mockRow) Err() error {
-	return m.errImpl()
-}
-
-func (m *mockRow) Scan(v ...any) error {
-	return m.scanImpl(v...)
-}
-
-func createRowWithError(err error) Row {
-
-	return &mockRow{
-		errImpl: func() error {
-			return err
-		},
-	}
 }
