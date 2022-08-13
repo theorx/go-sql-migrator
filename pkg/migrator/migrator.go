@@ -55,15 +55,15 @@ func (m *migrator) Apply(migrations []Migration) error {
 }
 
 func (m *migrator) migrate(entry Migration) error {
-	m.log("[Migrator]> Updating database for:", entry.ID(), "-", entry.Name())
-	if err := m.updateMigrationsApplied(entry); err != nil {
-		m.log("[Migrator]> Database update has failed, aborting migration! Error:", err)
-		return err
-	}
-
 	m.log("[Migrator]> Applying migration for:", entry.ID(), "-", entry.Name())
 	if err := entry.Apply(m.db); err != nil {
 		m.log("[Migrator]> Applying migration has failed, aborting migration! Error:", err, "Entry:", entry)
+		return err
+	}
+
+	m.log("[Migrator]> Updating database for:", entry.ID(), "-", entry.Name())
+	if err := m.updateMigrationsApplied(entry); err != nil {
+		m.log("[Migrator]> Database update has failed, aborting migration! Error:", err)
 		return err
 	}
 
